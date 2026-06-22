@@ -2,7 +2,33 @@
 """
 Generate XMind test-case files from structured JSON.
 
-Input schema:
+Supported input schemas:
+
+Platform-first structure:
+{
+  "project_name": "Project test cases",
+  "platforms": [
+    {
+      "name": "iOS",
+      "modules": [
+        {
+          "name": "Module name",
+          "cases": [
+            {
+              "title": "Case title",
+              "purpose": "What this case verifies",
+              "prerequisites": ["Optional precondition"],
+              "steps": ["Step 1", "Step 2"],
+              "expected": ["Expected 1", "Expected 2"]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+
+Legacy structure:
 {
   "project_name": "Project test cases",
   "modules": [
@@ -95,6 +121,60 @@ def normalize_required_list(value: Any, path: str, errors: List[str]) -> List[st
     return result
 
 
+def validate_case(case: Any, case_path: str, errors: List[str], warnings: List[str]) -> None:
+    if not isinstance(case, dict):
+        errors.append(f"{case_path} must be an object")
+        return
+
+    as_non_empty_string(case.get("title"), f"{case_path}.title", errors)
+    as_non_empty_string(case.get("purpose"), f"{case_path}.purpose", errors)
+
+    steps = normalize_required_list(case.get("steps"), f"{case_path}.steps", errors)
+    expected = normalize_required_list(case.get("expected"), f"{case_path}.expected", errors)
+    normalize_optional_list(case.get("prerequisites"), f"{case_path}.prerequisites", errors)
+
+    if steps and expected and len(steps) != len(expected):
+        warnings.append(
+            f"{case_path}: steps count ({len(steps)}) and expected count ({len(expected)}) differ"
+        )
+
+
+def validate_module(module: Any, module_path: str, errors: List[str], warnings: List[str]) -> None:
+    if not isinstance(module, dict):
+        errors.append(f"{module_path} must be an object")
+        return
+
+    as_non_empty_string(module.get("name"), f"{module_path}.name", errors)
+    cases = module.get("cases")
+    if not isinstance(cases, list):
+        errors.append(f"{module_path}.cases must be a list")
+        return
+    if not cases:
+        warnings.append(f"{module_path}.cases is empty")
+        return
+
+    for case_index, case in enumerate(cases):
+        validate_case(case, f"{module_path}.cases[{case_index}]", errors, warnings)
+
+
+def validate_platform(platform: Any, platform_path: str, errors: List[str], warnings: List[str]) -> None:
+    if not isinstance(platform, dict):
+        errors.append(f"{platform_path} must be an object")
+        return
+
+    as_non_empty_string(platform.get("name"), f"{platform_path}.name", errors)
+    modules = platform.get("modules")
+    if not isinstance(modules, list):
+        errors.append(f"{platform_path}.modules must be a list")
+        return
+    if not modules:
+        warnings.append(f"{platform_path}.modules is empty")
+        return
+
+    for module_index, module in enumerate(modules):
+        validate_module(module, f"{platform_path}.modules[{module_index}]", errors, warnings)
+
+
 def validate_cases_data(data: Any) -> Tuple[List[str], List[str]]:
     errors: List[str] = []
     warnings: List[str] = []
@@ -103,6 +183,28 @@ def validate_cases_data(data: Any) -> Tuple[List[str], List[str]]:
         return ["root must be a JSON object"], warnings
 
     as_non_empty_string(data.get("project_name"), "project_name", errors)
+
+    has_platforms = "platforms" in data
+    has_modules = "modules" in data
+    if has_platforms and has_modules:
+        errors.append("top-level platforms and modules cannot both be provided")
+        return errors, warnings
+    if not has_platforms and not has_modules:
+        errors.append("provide either top-level platforms or modules")
+        return errors, warnings
+
+    if has_platforms:
+        platforms = data.get("platforms")
+        if not isinstance(platforms, list):
+            errors.append("platforms must be a non-empty list")
+            return errors, warnings
+        if not platforms:
+            errors.append("platforms must not be empty")
+            return errors, warnings
+
+        for platform_index, platform in enumerate(platforms):
+            validate_platform(platform, f"platforms[{platform_index}]", errors, warnings)
+        return errors, warnings
 
     modules = data.get("modules")
     if not isinstance(modules, list):
@@ -113,69 +215,71 @@ def validate_cases_data(data: Any) -> Tuple[List[str], List[str]]:
         return errors, warnings
 
     for module_index, module in enumerate(modules):
-        module_path = f"modules[{module_index}]"
-        if not isinstance(module, dict):
-            errors.append(f"{module_path} must be an object")
-            continue
-
-        as_non_empty_string(module.get("name"), f"{module_path}.name", errors)
-        cases = module.get("cases")
-        if not isinstance(cases, list):
-            errors.append(f"{module_path}.cases must be a list")
-            continue
-        if not cases:
-            warnings.append(f"{module_path}.cases is empty")
-            continue
-
-        for case_index, case in enumerate(cases):
-            case_path = f"{module_path}.cases[{case_index}]"
-            if not isinstance(case, dict):
-                errors.append(f"{case_path} must be an object")
-                continue
-
-            as_non_empty_string(case.get("title"), f"{case_path}.title", errors)
-            as_non_empty_string(case.get("purpose"), f"{case_path}.purpose", errors)
-
-            steps = normalize_required_list(case.get("steps"), f"{case_path}.steps", errors)
-            expected = normalize_required_list(case.get("expected"), f"{case_path}.expected", errors)
-
-            normalize_optional_list(case.get("prerequisites"), f"{case_path}.prerequisites", errors)
-
-            if steps and expected and len(steps) != len(expected):
-                warnings.append(
-                    f"{case_path}: steps count ({len(steps)}) and expected count ({len(expected)}) differ"
-                )
+        validate_module(module, f"modules[{module_index}]", errors, warnings)
 
     return errors, warnings
 
 
-def normalize_cases_data(data: Dict[str, Any]) -> Dict[str, Any]:
-    modules: List[Dict[str, Any]] = []
-    for module in data["modules"]:
-        module_name = module["name"].strip()
-
-        cases: List[Dict[str, Any]] = []
-        for case in module.get("cases", []):
-            cases.append(
-                {
-                    "title": case["title"].strip(),
-                    "purpose": case["purpose"].strip(),
-                    "prerequisites": normalize_optional_list(case.get("prerequisites"), "prerequisites", []),
-                    "steps": normalize_required_list(case.get("steps"), "steps", []),
-                    "expected": normalize_required_list(case.get("expected"), "expected", []),
-                }
-            )
-
-        modules.append(
-            {
-                "name": module_name,
-                "cases": cases,
-            }
-        )
-
+def normalize_case(case: Dict[str, Any]) -> Dict[str, Any]:
     return {
+        "title": case["title"].strip(),
+        "purpose": case["purpose"].strip(),
+        "prerequisites": normalize_optional_list(case.get("prerequisites"), "prerequisites", []),
+        "steps": normalize_required_list(case.get("steps"), "steps", []),
+        "expected": normalize_required_list(case.get("expected"), "expected", []),
+    }
+
+
+def normalize_module(module: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "name": module["name"].strip(),
+        "cases": [normalize_case(case) for case in module.get("cases", [])],
+    }
+
+
+def normalize_platform(platform: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "name": platform["name"].strip(),
+        "modules": [normalize_module(module) for module in platform.get("modules", [])],
+    }
+
+
+def normalize_cases_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {
         "project_name": data["project_name"].strip(),
-        "modules": modules,
+    }
+
+    if "platforms" in data:
+        normalized["structure"] = "platforms"
+        normalized["platforms"] = [normalize_platform(platform) for platform in data["platforms"]]
+    else:
+        normalized["structure"] = "modules"
+        normalized["modules"] = [normalize_module(module) for module in data["modules"]]
+
+    return normalized
+
+
+def collect_stats(normalized: Dict[str, Any]) -> Dict[str, int]:
+    if normalized["structure"] == "platforms":
+        platform_count = len(normalized["platforms"])
+        module_count = sum(len(platform["modules"]) for platform in normalized["platforms"])
+        case_count = sum(
+            len(module["cases"])
+            for platform in normalized["platforms"]
+            for module in platform["modules"]
+        )
+        return {
+            "platform_count": platform_count,
+            "module_count": module_count,
+            "case_count": case_count,
+        }
+
+    module_count = len(normalized["modules"])
+    case_count = sum(len(module["cases"]) for module in normalized["modules"])
+    return {
+        "platform_count": 0,
+        "module_count": module_count,
+        "case_count": case_count,
     }
 
 
@@ -221,22 +325,16 @@ def build_case_topic(case: Dict[str, Any]) -> ET.Element:
     expected_text = "预期结果：\n" + "\n".join(
         f"{index + 1}、{result}" for index, result in enumerate(case["expected"])
     )
-    expected_topic = build_topic(
-        expected_text,
-    )
-    steps_topic = build_topic(
-        steps_text,
-        [expected_topic],
-    )
+    expected_topic = build_topic(expected_text)
+    steps_topic = build_topic(steps_text, [expected_topic])
     prerequisites = case["prerequisites"] or ["无"]
-    prerequisite_topic = build_topic(
-        "前置条件：" + "；".join(prerequisites),
-        [steps_topic],
-    )
-    return build_topic(
-        "测试目的：" + case["purpose"],
-        [prerequisite_topic],
-    )
+    prerequisite_topic = build_topic("前置条件：" + "；".join(prerequisites), [steps_topic])
+    return build_topic("测试目的：" + case["purpose"], [prerequisite_topic])
+
+
+def build_module_topic(module: Dict[str, Any]) -> ET.Element:
+    case_topics = [build_case_topic(case) for case in module["cases"]]
+    return build_topic(module["name"], case_topics)
 
 
 def build_content_xml(data: Dict[str, Any]) -> bytes:
@@ -264,15 +362,18 @@ def build_content_xml(data: Dict[str, Any]) -> bytes:
         },
     )
 
-    module_topics: List[ET.Element] = []
-    for module in data["modules"]:
-        case_topics = [build_case_topic(case) for case in module["cases"]]
-        module_topics.append(build_topic(module["name"], case_topics))
+    root_topics: List[ET.Element] = []
+    if data["structure"] == "platforms":
+        for platform in data["platforms"]:
+            module_topics = [build_module_topic(module) for module in platform["modules"]]
+            root_topics.append(build_topic(platform["name"], module_topics))
+    else:
+        root_topics = [build_module_topic(module) for module in data["modules"]]
 
     sheet.append(
         build_topic(
             data["project_name"],
-            module_topics,
+            root_topics,
             structure_class="org.xmind.ui.logic.right",
         )
     )
@@ -339,6 +440,7 @@ def create_xmind(data: Dict[str, Any], output_path: Path) -> Dict[str, int]:
 
     stats = validate_xmind_file(output_path)
     stats["warnings"] = len(warnings)
+    stats.update(collect_stats(normalized))
     return stats
 
 
@@ -387,35 +489,39 @@ def load_json(path: Path) -> Dict[str, Any]:
 
 def sample_data() -> Dict[str, Any]:
     return {
-        "project_name": "搜索功能测试用例",
-        "modules": [
+        "project_name": "多端搜索功能测试用例",
+        "platforms": [
             {
-                "name": "入口",
-                "cases": [
+                "name": "iOS",
+                "modules": [
                     {
-                        "title": "验证首页搜索入口展示",
-                        "purpose": "验证首页顶部搜索入口按配置正常展示",
-                        "prerequisites": ["后台已开启首页搜索入口配置"],
-                        "steps": ["打开 iOS 端 App 并进入首页", "查看页面顶部搜索区域"],
-                        "expected": ["首页加载完成", "顶部展示搜索框、购物车入口和消息入口"],
-                    },
-                    {
-                        "title": "验证选购页搜索入口展示",
-                        "purpose": "验证选购页顶部搜索入口按配置正常展示",
-                        "steps": ["打开 App 并切换至选购页", "查看页面顶部搜索区域"],
-                        "expected": ["选购页加载完成", "顶部展示搜索框，布局不遮挡页面内容"],
-                    },
+                        "name": "入口",
+                        "cases": [
+                            {
+                                "title": "验证 iOS 首页搜索入口展示",
+                                "purpose": "验证 iOS 首页顶部搜索入口按配置正常展示",
+                                "prerequisites": ["后台已开启 iOS 首页搜索入口配置"],
+                                "steps": ["打开 iOS 端 App 并进入首页", "查看页面顶部搜索区域"],
+                                "expected": ["首页加载完成", "顶部展示搜索框、购物车入口和消息入口"],
+                            }
+                        ],
+                    }
                 ],
             },
             {
-                "name": "暗纹词",
-                "cases": [
+                "name": "Android外发包",
+                "modules": [
                     {
-                        "title": "验证暗纹词每 3 秒轮播",
-                        "purpose": "验证搜索框暗纹词按算法返回内容每 3 秒轮播展示",
-                        "prerequisites": ["后台已配置 3 条暗纹词", "算法接口正常返回暗纹词"],
-                        "steps": ["进入首页", "查看搜索框暗纹词", "等待 3 秒", "再次查看暗纹词"],
-                        "expected": ["首页加载完成", "展示第 1 条暗纹词", "等待期间页面无卡顿", "暗纹词切换为下一条并循环展示"],
+                        "name": "暗纹词",
+                        "cases": [
+                            {
+                                "title": "验证 Android外发包暗纹词每 3 秒轮播",
+                                "purpose": "验证 Android外发包搜索框暗纹词按算法返回内容每 3 秒轮播展示",
+                                "prerequisites": ["后台已配置 3 条暗纹词", "算法接口正常返回暗纹词"],
+                                "steps": ["进入 Android外发包首页", "查看搜索框暗纹词", "等待 3 秒", "再次查看暗纹词"],
+                                "expected": ["首页加载完成", "展示第 1 条暗纹词", "等待期间页面无卡顿", "暗纹词切换为下一条并循环展示"],
+                            }
+                        ],
                     }
                 ],
             },
@@ -425,9 +531,12 @@ def sample_data() -> Dict[str, Any]:
 
 def print_validation_result(data: Dict[str, Any], warnings: List[str]) -> None:
     normalized = normalize_cases_data(data)
-    module_count = len(normalized["modules"])
-    case_count = sum(len(module["cases"]) for module in normalized["modules"])
-    print(f"Validation passed: modules={module_count}, cases={case_count}, warnings={len(warnings)}")
+    stats = collect_stats(normalized)
+    print(
+        "Validation passed: "
+        f"platforms={stats['platform_count']}, modules={stats['module_count']}, "
+        f"cases={stats['case_count']}, warnings={len(warnings)}"
+    )
     for warning in warnings:
         print(f"Warning: {warning}", file=sys.stderr)
 
@@ -481,16 +590,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    normalized = normalize_cases_data(data)
-    module_count = len(normalized["modules"])
-    case_count = sum(len(module["cases"]) for module in normalized["modules"])
-
     for warning in warnings:
         print(f"Warning: {warning}", file=sys.stderr)
 
     print(
         "Generated XMind: "
-        f"path={args.output}, modules={module_count}, cases={case_count}, "
+        f"path={args.output}, platforms={stats['platform_count']}, "
+        f"modules={stats['module_count']}, cases={stats['case_count']}, "
         f"topics={stats['topic_count']}, warnings={len(warnings)}"
     )
     return 0
