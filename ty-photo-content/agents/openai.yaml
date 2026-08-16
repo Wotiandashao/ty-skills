@@ -1,0 +1,7 @@
+interface:
+  display_name: "导出图片上下文"
+  short_description: "把图片导出为文本模型可用的结构化上下文"
+  default_prompt: "使用 $ty-photo-content 分析附图并生成可直接复制的视觉交接数据包。"
+
+policy:
+  allow_implicit_invocation: true
