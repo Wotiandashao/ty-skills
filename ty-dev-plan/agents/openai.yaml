@@ -1,7 +1,7 @@
 interface:
   display_name: "需求开发规划"
-  short_description: "先生成实施计划，待审核通过后再生成一份或多份执行计划"
-  default_prompt: "使用 $ty-dev-plan，根据我提供的需求文档和当前项目先生成实施计划；待我审核通过后，再根据最新版实施计划生成执行计划。"
+  short_description: "先生成实施计划，待审核通过后再按任务生成独立执行步骤文件"
+  default_prompt: "使用 $ty-dev-plan，根据我提供的需求文档和当前项目先生成带需求名的实施计划；待我审核通过后，再根据最新版实施计划为每项任务生成独立的执行步骤文件。"
 
 policy:
   allow_implicit_invocation: true
